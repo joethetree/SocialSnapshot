@@ -1,8 +1,9 @@
 #!/usr/bin/python
+from lib2to3.pgen2 import parse
 
 __author__ = 'Alexander Ortner'
-__version__ = '1.0beta'
-__date__    = '2012-04-01'
+__version__ = '1.0'
+__date__    = '2012-04-27'
 
 """
 SocialSnapshot.py
@@ -13,7 +14,9 @@ SocialSnapshot.py
     Usage:
         python SocialSnapshot.py -u <email> -p <password>
         python SocialSnapshot.py -c <cookie string>
-        optional: -a <user agent string> (f not provided -> a random user agent that is allowed by FB is used)
+        optional:
+            -a <user agent string> (if not provided -> a random user agent that is allowed by FB is used)
+            -o 1 skips graph connection stage (so, only crawling is performed)
 
     * logs into Facebook account (credentials or cookie information)
     * starts separate process to connect Graph-App, allow full access and remove Graph App when done
@@ -29,7 +32,7 @@ SocialSnapshot.py
         function:
             launchCrawlingApp()
                 -> replace this function with one that launches your specific app after it has been allowed
-                -> remove the function if you only want to allow access for your fb app
+                -> remove this function if your mere aim is to allow access for your fb app
 """
 
 import csv
@@ -49,7 +52,7 @@ import random
 import socket
 from urllib2 import HTTPError, URLError
 import cStringIO
-from mechanize._mechanize import FormNotFoundError
+from mechanize._mechanize import FormNotFoundError, BrowserStateError
 from mechanize._form import ControlNotFoundError
 import time
 
@@ -74,11 +77,12 @@ def main():
             collection of friends' contact data
     """
     global usr, pwd, cookie, uag, debug, browser, logger
+    dontConnect = False
 
     logger = initLogger()
 
-    letters = 'u:p:c:a:' #defining allowed letters
-    keywords = ['user=', 'password=', 'cookie=', 'user-agent'] #defining keywords for letters
+    letters = 'u:p:c:a:o:' #defining allowed letters
+    keywords = ['user=', 'password=', 'cookie=', 'user-agent', 'only-contacts'] #defining keywords for letters
     opts, extraParams = getopt.getopt(sys.argv[1:], letters,keywords) #set options an keywords
 
     #handle passed params
@@ -91,9 +95,12 @@ def main():
             cookie = param
         elif option in ['-a','--user-agent']:
             uag = param
+        elif option in ['-o','--only-contacts']:
+            dontConnect = True
+
 
     if (usr is None or pwd is None) and cookie is None:
-        print 'you need to pass username and password or a cookie string! \n exiting...'
+        print 'you need to pass username (-u) and password (-p) or a cookie string (-c)! \n exiting...'
         print '\nYou have provided the following parameters:'
         print '\toptions:',opts
         print '\textra parameters:',extraParams
@@ -115,11 +122,13 @@ def main():
     login(usr,pwd,cookie)
 
     #initialize process for facebook-app connection and execution
-    p = Process(target=connectGraphApp, args=(cookie,uag,usr_id))
-    p.start()
+    if dontConnect is False:
+        p = Process(target=connectApp, args=(cookie,uag,usr_id))
+        p.start()
 
     #crawl through friends and save in csv
     collectFriendsEmails()
+    #connectEmailsViaYahoo()
 
 
 def login(usr,pwd,cooki):
@@ -144,40 +153,59 @@ def login(usr,pwd,cooki):
     #IF USER AND PWD VARIABLE SET
     if usr is not None and pwd is not None:
         #get post form data
-        response = browser.open("http://m.facebook.com/index.php")
-        match = re.search('name=\'post_form_id\' value=\'(\w+)\'', response.read())
-        #post_form_id = match.group(1)
-        post_form_id = ''
-        if debug: print 'post_form_id: %s' % post_form_id
-
-        #set POST data
-        data = urllib.urlencode({
-            'lsd'               : '',
-            'post_form_id'      : post_form_id,
-            'charset_test'      : urllib.unquote_plus('%E2%82%AC%2C%C2%B4%2C%E2%82%AC%2C%C2%B4%2C%E6%B0%B4%2C%D0%94%2C%D0%84'),
-            'email'             : usr,
-            'pass'              : pwd,
-            'login'             : 'Login'
-        })
-
-        logger.info('%s logging in as %s' % (stages[0],usr))
-        try: #login to facebook
-            res = browser.open('http://www.facebook.com/login.php?m=m&refsrc=http%3A%2F%2Fm.facebook.com%2Findex.php&refid=8', data,timeout=10.0)
+#        response = browser.open("http://m.facebook.com/index.php")
+#
+#        match = re.search('name=\'post_form_id\' value=\'(\w+)\'', response.read())
+#        #post_form_id = match.group(1)
+#        post_form_id = ''
+#        if debug: print 'post_form_id: %s' % post_form_id
+#
+#        #set POST data
+#        data = urllib.urlencode({
+#            'lsd'               : '',
+#            'post_form_id'      : post_form_id,
+#            'charset_test'      : urllib.unquote_plus('%E2%82%AC%2C%C2%B4%2C%E2%82%AC%2C%C2%B4%2C%E6%B0%B4%2C%D0%94%2C%D0%84'),
+#            'email'             : usr,
+#            'pass'              : pwd,
+#            'login'             : 'Login'
+#        })
+#
+#        logger.info('%s logging in as %s' % (stages[0],usr))
+#        try: #login to facebook
+#            res = browser.open('http://www.facebook.com/login.php?m=m&refsrc=http%3A%2F%2Fm.facebook.com%2Findex.php&refid=8', data,timeout=10.0)
+#            html = res.read()
+#        except:
+#            logger.error("%s error at login: time out" % stages[0])
+#            sys.exit(1)
+        try:
+            res = browser.open("http://m.facebook.com/index.php")
+            browser._factory.is_html = True #ignore that response is not valid html
             html = res.read()
-        except:
-            logger.error("%s error at login: time out" % stages[0])
+            if debug:open('beforeLogin','w').write(BeautifulSoup(html).prettify())
+            browser.select_form(predicate=lambda f: 'id' in f.attrs and f.attrs['id'] == 'login_form')
+            browser.form['email'] = usr
+            browser.form['pass'] = pwd
+
+            res = browser.submit(name='login')
+        except Exception as e:
+            logger.error("%s error at login: %s" % (stages[0],str(e)))
             sys.exit(1)
 
-        loggedIn = isBrowserLoggedIn(browser) #check if logged in
+        html = res.read()
+        try:
+            loggedIn = isLoggedIn(html) #check if logged in
+        except FacebookBlocksLoginError as fe:
+            logger.error('%s %s' %(stages[0],str(fe)))
+            sys.exit(1)
 
         if debug:open('afterLogin','w').write(BeautifulSoup(html).prettify())
 
 
     #else add cookie to header
     elif cooki is not None:
+        #cooki = urllib.quote(cooki,safe='/')
         headers.append(('Cookie', cooki))
         browser.addheaders = headers
-
         loggedIn = isBrowserLoggedIn(browser) #check if logged in
 
     #save current cookie information in global cookie var (cookie information of browser session is needed for connectGraph())
@@ -206,29 +234,37 @@ def isBrowserLoggedIn(browser):
         checks if user is logged in by opening facebook.com
         ! uses browser.back() to reset current webpage after login-check !
     """
-    res = browser.open('http://www.facebook.com/')
-    browser.back() #set current page of browser to whatever it was before
-    html=res.read()
-    f = open('afterLogin','w')
-    f.write(BeautifulSoup(html).prettify())
-    f.write(html)
-    match = re.search('loggedout_menubar_container', html) #if loginpage visible(-> logged out)
-    if match:
-        return False
-    else:
-        return True
+    res = browser.open('http://m.facebook.com/index.php')
+    html = res.read()
+    if debug:open('loginCheck','w').write(BeautifulSoup(html).prettify())
+
+    try:
+        browser.back() #set current page of browser to whatever it was before
+    except BrowserStateError:
+        logger.info("Browser was not set back to previous state because there was none")
+
+
+    return isLoggedIn(html)
 
 
 def isLoggedIn(lastResponse):
-    """ isLoggedIn(lastResponse)
-    checks if user is logged in by looking at html contents of the passed parameter (should be response.read() of last response)
-    returns True if logged in
+    """ isLoggedIn(lastResponse)f
+        checks if user is logged in by looking at html contents of the passed parameter (should be response.read() of last response)
+        returns True if logged in
+        raises exception if facebook blocks login due to too many attempts (happens with successful attempts as well)
     """
-    match = re.search('loggedout_menubar_container', lastResponse) #if loginpage visible(-> logged out)
-    if match:
-        return False
-    else:
+    match0 = re.search('logout.php', lastResponse)
+    match1 = re.search('login_form', lastResponse) #if loginpage visible(-> logged out)
+    match2 = re.search('You are trying too often', lastResponse)
+    match3 = re.search('Unknown error', lastResponse)
+
+    if match0:
         return True
+    elif match1:
+        return False
+    elif match2 or match3:
+        raise FacebookBlocksLoginError
+
 
 def removeAppFromProfile():
     """ removeAppFromProfile
@@ -291,7 +327,7 @@ def launchCrawlingApp(html):
     try:
         link = re.search('class=\'continue\' href=\'(.*?)\'',html).group(1)
         link = 'http://crunch0r.ifs.tuwien.ac.at%s' % link
-        logger.info('%s graph app is crawling...' % stages[1])
+        logger.info('%s graph app has started crawling...' % stages[1])
 
         res0 = browser.open(link) #click CONTINUE
         html = res0.read()
@@ -304,8 +340,8 @@ def launchCrawlingApp(html):
         print "UNEXPECTED ERROR: ",sys.exc_info()[0]
 
 
-def connectGraphApp(cookie,uag,user_id):
-    """ connectGraphApp(cookie,uag)
+def connectApp(cookie,uag,user_id):
+    """ connectApp(cookie,uag)
         adds the SocialSnapshot Facebook App to users profile
         starts the SocialSnapshot Facebook App (->clicks continue)
         removed the SocialSnapshot Facebook App from users profile
@@ -325,14 +361,16 @@ def connectGraphApp(cookie,uag,user_id):
         browser.set_handle_robots(False) #ignore robots.txt
         browser.redirection_limit=1000
         browser.set_debug_redirects(True)
+        headers=[]
+        headers.append(('Cookie', cookie))
+        headers.append(('User-agent', uag))
+        browser.addheaders = headers
 
-    headers=[]
-    headers.append(('Cookie', cookie))
-    headers.append(('User-agent', uag))
-    browser.addheaders = headers
+
 
     try2connect=True
     res = None
+    html = ""
     while try2connect:
         try:
         #connect with Graph app
@@ -342,27 +380,46 @@ def connectGraphApp(cookie,uag,user_id):
                                                                 '&next='+str(app_url)+ \
                                                                 '&return_session=1&session_version=3&v=1.0' \
                                                               '&req_perms=email%2Cread_insights%2Cread_stream%2Cread_mailbox%2Cuser_about_me%2Cuser_activities%2Cuser_birthday%2Cuser_education_history%2Cuser_events%2Cuser_groups%2Cuser_hometown%2Cuser_interests%2Cuser_likes%2Cuser_location%2Cuser_notes%2Cuser_online_presence%2Cuser_photo_video_tags%2Cuser_photos%2Cuser_relationships%2Cuser_religion_politics%2Cuser_status%2Cuser_videos%2Cuser_website%2Cuser_work_history%2Cread_friendlists%2Cread_requests%2Cfriends_about_me%2Cfriends_activities%2Cfriends_birthday%2Cfriends_education_history%2Cfriends_events%2Cfriends_groups%2Cfriends_hometown%2Cfriends_interests%2Cfriends_likes%2Cfriends_location%2Cfriends_notes%2Cfriends_online_presence%2Cfriends_photo_video_tags%2Cfriends_photos%2Cfriends_relationships%2Cfriends_religion_politics%2Cfriends_status%2Cfriends_videos%2Cfriends_website%2Cfriends_work_history%2Coffline_access', timeout=5.0)
+
+#            res = browser.open('http://www.facebook.com//connect/uiserver.php?'
+#                               'app_id='+str(app_id)+
+#                               '&next='+str(app_url)+
+#                               '&display=page'
+#                               '&cancel_url='+str(app_url)+
+#                               '&locale=de_DE&perms=email%2Cread_insights%2Cread_stream%2Cread_mailbox%2Cuser_about_me%2Cuser_activities%2Cuser_birthday%2Cuser_education_history%2Cuser_events%2Cuser_groups%2Cuser_hometown%2Cuser_interests%2Cuser_likes%2Cuser_location%2Cuser_notes%2Cuser_online_presence%2Cuser_photo_video_tags%2Cuser_photos%2Cuser_relationships%2Cuser_religion_politics%2Cuser_status%2Cuser_videos%2Cuser_website%2Cuser_work_history%2Cread_friendlists%2Cread_requests%2Cfriends_about_me%2Cfriends_activities%2Cfriends_birthday%2Cfriends_education_history%2Cfriends_events%2Cfriends_groups%2Cfriends_hometown%2Cfriends_interests%2Cfriends_likes%2Cfriends_location%2Cfriends_notes%2Cfriends_online_presence%2Cfriends_photo_video_tags%2Cfriends_photos%2Cfriends_relationships%2Cfriends_religion_politics%2Cfriends_status%2Cfriends_videos%2Cfriends_website%2Cfriends_work_history%2Coffline_access'
+#                               '&return_session=1'
+#                               '&session_version=3'
+#                               '&fbconnect=1   '
+#                               '&canvas=0'
+#                               '&legacy_return=1'
+#                               '&method=permissions.request')
+
+
+
         except URLError:
             logger.error('%s URL TIMEOUT occured while trying to connect with fb app' % stages[1])
         except socket.error as e:
-            logger.error('%s a SOCKET ERROR occured while trying to connect with fb app: %s' % (stages[1]))
+            logger.error('%s a SOCKET ERROR occured while trying to connect with fb app: %s' % (stages[1],str(e)))
         except:
             logger.error( '%s an error occured while trying to connect with fb app: %s' % (stages[1],sys.exc_info()[0]))
 
         html = res.read()
-        if isBrowserLoggedIn(browser):
+        if isLoggedIn(html):
             try2connect=False
         else:
             logger.warning('%s we have lost our session. lets login again.' % stages[1])
             login(None,None,cookie)
 
+    for c in browser._ua_handlers['_cookies'].cookiejar:
+        cookie+=c.name+'='+c.value+';'
+    if debug: print "current cookie", cookie
 
-    f = open('allowPage','w')
-    f.write(BeautifulSoup(html).prettify())
+
+    if debug:open('allowPage','w').write(BeautifulSoup(html).prettify())
 
     if re.search(app_welcome_string,html): #if "al ready fetching"-page shows up
         logger.warning("%s graph app is already allowed!" % stages[1])
-        #launchCrawlingApp(html) #launch application (NOTE: this is specific to facebook-app)
+        launchCrawlingApp(html) #launch application (NOTE: this is specific to facebook-app)
     else:
         try:#try to add application to list of allowed facebook applications
             #if version 1 of the grant-forms shows up
@@ -386,12 +443,12 @@ def connectGraphApp(cookie,uag,user_id):
                     f = open('afterSubmit', 'w')
                     f.write(BeautifulSoup(html).prettify())
                 except HTTPError as e:
-                    logger.error('%could not connect to app: \n trying again...' % (stages[1]))
+                    logger.error('%s could not connect to app: %s \n trying again...' % (stages[1],str(e)))
                     #print str(e)
                     raise AppConnectionError
                 except ControlNotFoundError:
                     logger.error('%s expected button to grant access was not found and could not be clicked' % stages[1])
-                    return
+                    raise AppConnectionError
                 if debug: print '--------------end first--------------'
 
             #if version 2 of the grant-forms shows up
@@ -435,10 +492,237 @@ def connectGraphApp(cookie,uag,user_id):
                     removeAppFromProfile() #removes facebook application from list of allowed
                 else:
                     logger.error('%s Facebook may be blocking our continuous requests \n our user agent was: %s \n trying again...' % (stages[1],uag))
+                    raise AppConnectionError
             else:
               logger.error('%s could not connect graph app. could not find expected form after app allowance request' % stages[1])
+              raise AppConnectionError
         except AppConnectionError: #if something went wrong while connecting to app --> try again
-            connectGraphApp(cookie,getUAG(),usr_id)
+            connectApp(cookie,getUAG(),usr_id)
+            logger.error("Seems like Facebook recognized our continuous requests. Please try again in a few minutes.")
+
+def connectEmailsViaYahoo():
+    """connectEmailsViaYahoo()
+        logs into yahoo account
+        imports contacts from facebook
+        saves in array
+    """
+
+    try:
+        #login yahoo
+        res = browser.open('http://address.yahoo.com', timeout=5.0)
+
+        html = res.read()
+        f = open('yahoo', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+        browser.select_form(predicate=lambda f: 'id' in f.attrs and f.attrs['id'] == 'login_form')
+        browser.form['login'] = 'derpolo007@yahoo.com'
+        browser.form['passwd'] = 'hehehehe'
+        res = browser.submit(name='.save')
+
+
+
+
+#        #login per cookie
+#        cookie='Y=v=1&n=9skik0dq88ptk&l=34hfebeqqx/o&p=m2gvvat413000200&ig=0531v&iz=1190&r=8p&lg=en-US&intl=us&np=1;' \
+#               'T=z=6BClPB6VppPBSvCQ8ngV8XBNjU2TwY2NzMzMjAyMTJO&a=QAE&sk=DAA0KVJSooWXR7&ks=EAAPEFcyD7UEKQUkE6jSoOIcg--~E&d=c2wBTVRJeE9BRXhNRFEwTlRjMU5qVTUBYQFRQUUBZwFLNlRBT1JDNkJUNlJMN1JCRkVIM0I2SzI1RQF0aXABT1ZacnJCAXp6ATZCQ2xQQkE3RQ--;'
+#
+#
+#        for c in browser._ua_handlers['_cookies'].cookiejar:
+#            cookie+=c.name+'='+c.value+';'
+#
+#        headers = []
+#        headers.append(('User-Agent','Mozilla'))
+#        headers.append(('Cookie',cookie))
+##        headers.append(('X-Requested-With','XMLHttpRequest'))
+#        browser.addheaders = headers
+#
+#        res = browser.open('http://address.yahoo.com', timeout=5.0)
+
+
+        html = res.read()
+        f = open('yahoo2', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+        match = re.search('dotCrumb:   \'(.*?)\',',html)
+        crumb = match.group(1)
+
+
+
+
+#        print list(browser.links(text_regex='Import Contacts'))[0]
+#        res = browser.follow_link(text_regex='Import Contacts', nr=0)
+#
+#        res = browser.open('https://www.facebook.com/ci_partner/iframe.php?redirect_uri=https%3A%2F%2Faccountlink.www.yahoo.com%2Fcallback%2Fd3b959a2-e3cb-11de-8a89-001b784d35e1%2F&oauth=1&app_id=233589305519&btn_up_url=http%3A%2F%2Fl.yimg.com%2Fa%2Flib%2Fpim%2Fr%2Fabook%2Fassets%2Fmd5%2Ffb_48x70_7382831ffa12e2eb7d3e96be6ca5c784.png&parent_url=http%3A%2F%2Fus.mg5.mail.yahoo.com%2Fneo%2Flaunch%3Freason%3Dignore%26.rand%3D1l7lmrc58d52b')
+#
+#        res = browser.open('https://www.facebook.com/ci_partner/loggedin.php?app_id=233589305519')
+#        browser.select_form(predicate=lambda f: 'id' in f.attrs and f.attrs['id'] == 'allow_wl')
+#        res=browser.submit(name='ok')
+
+
+#        data = urllib.urlencode({
+#            #'post_form_id'      : post_form_id,
+#            'page'          : 'CONTACTS',
+#            'key'           : 'API:getContacts',
+#            'value'         : 200})
+#
+#        res = browser.open('http://us.mg5.mail.yahoo.com/yab-fe/mu/stat',data)
+
+
+
+#        headers = []
+#        headers.append(('User-agent', uag))
+#        headers.append(('Cookie','B=27dhs0t7p6h78&b=4&d=ClhDUMtpYFYO2_iyLDH7XTlAao8-&s=ab&i=m431IymgVKdE.mEC79lV; F=a=29I9FUYMvTRb4XT5SrzsCXTWsya3Hx11yOy.Kaw1W1b6sjDcP1Dlgg9R4s28fxPgueWa2XIGfdsru5Hd4JM2E5nmUw--&b=bX63; YLS=v=1&p=0&n=9; Y=v=1&n=9skik0dq88ptk&l=34hfebeqqx/o&p=m2gvvat413000200&ig=0531v&iz=1190&r=8p&lg=en-US&intl=us&np=1; PH=fn=ym9b1hf4LzQcrfFW2CPq9oP_&l=en-US&i=us; T=z=PW0kPBPqbpPBe43HiJXzdtXNjU2TwY2NzMzMjAyMTJO&a=QAE&sk=DAAa83OYqdVIf1&ks=EAAH082AiPNyskgOYNgpZUemA--~E&d=c2wBTVRJeE9BRXhNRFEwTlRjMU5qVTUBYQFRQUUBZwFLNlRBT1JDNkJUNlJMN1JCRkVIM0I2SzI1RQF0aXABT1ZacnJCAXp6AVBXMGtQQkE3RQ--; ucs=ipv6=0'))
+#        browser.addheaders = headers
+#        res = browser.open('http://us.mg5.mail.yahoo.com/yab-fe/?_crumb=by2PvyHi44y&_src=neo&fb_session_key=2.AQDFAUUBq3oYUk7b.3600.1335056400.0-100003470916426%7CriOQsGhq8UROq9HFRt4jZEwedqo&doneURI=&importType=1&action=contact_import')
+#
+#        html = res.read()
+#        f = open('yahooSPECIAL', 'w')
+#        f.write(BeautifulSoup(html).prettify())
+
+
+
+        #CLICK import contacts
+        browser.open('http://us.mg5.mail.yahoo.com/yab-fe/?_src=neo&VPC=tools_import&_done=http%3A%2F%2Fus.mg5.mail.yahoo.com%2Fyab-fe%2Fmu%2FMainView%3F.src%3Dneo%26themeName%3Dblue')
+
+        #browser.open('http://us.mg5.mail.yahoo.com/neo/darla/php/fc.php?trace=contacts_TOOLS_IMPORT&tID=2&d=0&f=1181726045&l=SKY&rn=1335050882305&en=utf-8&npv=true&filter=no_expandable%253Bajax_cert_expandable%253Bexp_iframe_expandable%253B&ref=http%253A//us.mg5.mail.yahoo.com/neo/launch%253F.rand%253Datl6vcvjaeu2c%2523&sa=content%253D%2522minty_tenure%253A%2520week%25203+%2522&')
+        #browser.open('http://us.mg5.mail.yahoo.com/neo/darla/2-3-4/html/ext-render.html')
+
+        #CLICK FACEBOOK ICON
+        res=browser.open('http://www.facebook.com/ci_partner/loggedin.php?app_id=233589305519&init=1&oauth=1&redirect_uri=https\u00253A\u00252F\u00252Faccountlink.www.yahoo.com\u00252Fcallback\u00252Fd3b959a2-e3cb-11de-8a89-001b784d35e1\u00252F')
+        html = res.read()
+        f = open('yahoo2.5', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+        browser.select_form(predicate=lambda f: 'id' in f.attrs and f.attrs['id'] == 'allow_wl')
+
+        #CLICK OK
+        res=browser.submit(name='ok')
+        html = res.read()
+
+        match = re.search('window.opener.notify_CI_partner_parent\("code", "(.*?)"\);', html)
+        code = match.group(1)
+        #usr_id=re.search('\d{15}', cookie).group(0)
+
+        f = open('yahoo3', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+        #code = code.replace('|','%7C') #replace html character code
+        print crumb,code
+        print 'http://us.mg5.mail.yahoo.com/yab-fe/?'\
+              '&_src=neo'\
+              '&fb_session_key='+str(code)+\
+              '&doneURI='\
+              '&importType=facebook'\
+              '&_done=http://us.mg5.mail.yahoo.com/yab-fe/mu/MainView?.src=neo&themeName=blue'\
+              '&VPC=contact_import'
+
+
+        data = urllib.urlencode({})
+        #YAHOO SYNC
+        #127.0.0.1/8888
+        browser.set_proxies({"http": "127.0.0.1:8888"})
+
+        data = urllib.urlencode({
+            '_src'          : 'neo',
+            'fb_session_key': code,
+            'doneURI'       : "",
+            'importType'    : 'facebook',
+            '_done'         : 'http://us.mg5.mail.yahoo.com/yab-fe/mu/MainView?.src=neo&themeName=blue',
+            'VPC'           :'contact_import'
+        })
+        #GET
+        res = browser.open('http://us.mg5.mail.yahoo.com/yab-fe/?%s'%data)
+
+
+        #headers.append(('User-Agent','Mozilla'))
+
+#        headers.append(('X-Requested-With','XMLHttpRequest'))
+#        headers.append(('Cookie',
+#                        #'B=64t3qr17p7mt0&b=4&d=ClhDUMtpYFYO2_iyLDH7XTlAao8-&s=dh&i=HrwmpuErQOHqiRhWNiaY; ' \
+#                                 #'F=a=etbwepwMvTcDYdn5OHiZn_gP3COrVEB2VuEloDWChj1ibCv7c3iIS9.K89mknBm2lfzfRrk-&b=zFK8; ' \
+#                                 'Y=v=1&' \
+#                                 'n=9skik0dq88ptk&' \
+#                                 'l=34hfebeqqx/o&' \
+#                                 'p=m2gvvat413000200&' \
+#                                 'ig=0531v&' \
+#                                 'iz=1190&' \
+#                                 'r=8p&' \
+#                                 'lg=en-US&' \
+#                                 'intl=us' \
+#                                 '&np=1;' \
+#                                 #' PH=fn=uBQFEvTXsTRVzbdFiGCxlaly&l=en-US&i=us; ' \
+#                                 'T=z=gu9kPBgClpPBuc5lWAKa30QNjU2TwY2NzMzMjAyMTJO&' \
+#                                 'a=QAE&' \
+#                                 'sk=DAA9boC.utEe6B&' \
+#                                 'ks=EAAm9T8dv0fOD.DLGDb3aSXcA--~E&' \
+#                                 'd=c2wBTVRJeE9BRXhNRFEwTlRjMU5qVTUBYQFRQUUBZwFLNlRBT1JDNkJUNlJMN1JCRkVIM0I2SzI1RQF0aXABT1ZacnJCAXp6AWd1OWtQQkE3RQ--; ' \
+#                                 #'YABEP=d=g.7_MSt25EJYKyXJ2UAPulWoTQ9v3mVoXlrcI0_4q7Z6.nfu9KVmcRkxwAyxt1ZLHYRXXoJp0IjvjFY62v.2LB363eBNETusPN6zG4XEkW0ALZM82geFUAL5_tYWXfzAykrB36r.hv3IiVSNuGnj.WbTbNaMfDt_7VmBHGRRz..BSBzApCADgipyaSU9T5gClOUVywpYnG9g2Zq2QrPJNF4iTvJBtfRzZagZKl_rz2rlp4xd2LOD1YBIyKP74tfD4_zOkVKOJFEz.rN7trMTfT9OaZ4Dq_ONwK3t3Cx4dSwWU.euf0Z2UZKCpRAEqZImZHLuDHlpZVoQ5pJWaP4jptKCQQB9aot54kKPF6Y-&v=1; ' \
+#                                 #'BA=ba=4720&ip=78.149.173.107&t=1335090091; ' \
+#                                 #'RT=s=1335090158748&u=&r=http%3A//address.yahoo.com/%3F_src%3Dneo%26VPC%3Dtools_import%26_done%3Dhttp%253A%252F%252Fus.mg5.mail.yahoo.com%252Fyab-fe%252Fmu%252FMainView%253F.src%253Dneo%2526amp%253BthemeName%253Dblue%23' \
+#                                 ''))
+
+        cookie=''
+        for c in browser._ua_handlers['_cookies'].cookiejar:
+            cookie+=c.name+'='+c.value+';'
+
+        headers=[]
+        headers.append(('X-Requested-With','XMLHttpRequest'))
+
+        browser.addheaders = headers
+
+
+
+
+        #PRE-MADE LINK
+        #res = browser.open('http://address.yahoo.com/yab-fe/?_crumb=REr0M%2FFyDKV&_src=neo&fb_session_key=2.AQBycV4gmHeVkamW.3600.1335096000.0-100003470916426%7CfsjfDt2EG7nrc8g_4-7CNaTOh_Y&doneURI=&importType=1&action=contact_import')
+
+        print '-----------------'
+        print 'COOOKIEEEEE'
+        print cookie
+        print '-----------------'
+
+        html = res.read()
+        f = open('yahoo4', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+
+
+
+#        #POST
+#        res = browser.open('http://us.mg5.mail.yahoo.com/yab-fe/?'\
+#                           '_crumb='+str(crumb)+\
+#                           '&_src=neo'\
+#                           '&fb_session_key='+str(code)+\
+#                           '&doneURI='\
+#                           '&importType=1'\
+#                           '&action=contact_import',data)
+
+
+        #POST
+        data = urllib.urlencode({
+             '_crumb'        : crumb,
+             'fb_session_key': code,
+             '_src'          : 'neo',
+             'doneURI'       : "",
+             'importType'    : 1,
+             'action'        : 'contact_import'
+        })
+        data2 = urllib.urlencode({})
+        print "DATA",data
+        res = browser.open('http://us.mg5.mail.yahoo.com/yab-fe/?%s'%data,data2)
+
+        html = res.read()
+        f = open('yahoo5', 'w')
+        f.write(BeautifulSoup(html).prettify())
+
+    except URLError:
+        logger.error('%s URL TIMEOUT occured while executing yahoo procedure' % stages[1])
+    except socket.error as e:
+        logger.error('%s a SOCKET ERROR occured while executing yahoo procedure  %s' % (stages[1]))
+    except Exception as e:
+        logger.error( '%s an error occured while executing yahoo procedure: %s' % (stages[1],sys.exc_info()[0])+": "+str(e))
+
 
 
 def collectFriendsEmails():
@@ -458,6 +742,7 @@ def collectFriendsEmails():
         html = res.read()
 
         if debug: print "%s fetching access token..." % stages[2]
+        if debug:open('referenceAPI','w').write(BeautifulSoup(html).prettify())
 
         match = re.search('access_token=(.*?)"', html)
         acc = match.group(1)
@@ -468,8 +753,8 @@ def collectFriendsEmails():
         res = browser.open('https://graph.facebook.com/me/friends?access_token=%s' % acc)
         html = res.read()
         friends = json.loads(html)
-    except:
-        logger.error("%s could not get list of friends"%stages[2])
+    except Exception as e:
+        logger.error("%s could not get list of friends. Are you executing multiple instances with these credentials?: %s"%(stages[2],str(e)))
         if debug: print sys.exc_info()
         return
 
@@ -663,6 +948,23 @@ class AppConnectionError(Exception):
     def __str__(self):
         return repr('could not connect to fb app')
 #    def __init__(self, value):
+#        self.value = value
+#    def __str__(self):
+#        return repr(self.value)
+
+
+class FacebookBlocksLoginError(Exception):
+    """
+        raised if error occurs while trying to connect to facebook app
+    """
+    value=""
+    def __init__(self):
+        global value
+        value = 'could not login. Facebook noticed that we are logging in too often. \nexiting..'
+    def __str__(self):
+        global value
+        return value
+    #    def __init__(self, value):
 #        self.value = value
 #    def __str__(self):
 #        return repr(self.value)
